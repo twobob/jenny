@@ -42,7 +42,14 @@ static void usage(void) {
         "  --vel N      hit velocity 1-127 (default 75)\n"
         "  --bpm N      tempo (default 120)\n"
         "  --metre N/D  time signature, sets sixteenths per bar for --beat (default 4/4)\n"
-        "  --accent V   velocity of hits on the downbeat: +N or -N relative to --vel, or N absolute\n");
+        "  --accent V   velocity of hits on the downbeat: +N or -N relative to --vel, or N absolute\n"
+        "  --arp [STYLE] arpeggiate the chord while the --beat pattern is 1 or held (default classic)\n"
+        "               classic   12312312, notes 1-3 in eighths restarting each bar\n"
+        "               DIGITS    your own bar pattern of chord notes, lowest = 1, e.g. 1323\n"
+        "               up down updown downup upanddown downandup converge diverge\n"
+        "               condiverge pinkyup pinkyupdown thumbup thumbupdown chord\n"
+        "               random randomother randomonce\n"
+        "  --rate N     arp step, 8 for eighths or 16 for sixteenths (default 8)\n");
     exit(2);
 }
 
@@ -57,8 +64,109 @@ static int int_arg(int argc, char **argv, int *i, int lo, int hi) {
     return (int)v;
 }
 
+static const char *arp_names[] = {
+    "up", "down", "updown", "downup", "upanddown", "downandup", "converge", "diverge",
+    "condiverge", "pinkyup", "pinkyupdown", "thumbup", "thumbupdown", "chord",
+    "random", "randomother", "randomonce", NULL
+};
+
+static const char *arp;
+static int arp_step = 2;
+static unsigned long rng = 12345;
+
+static int rnd(int n) {
+    rng = rng * 1103515245UL + 12345UL;
+    return (int)((rng >> 16) % (unsigned long)n);
+}
+
+static void shuffle(int *s, int n) {
+    for (int i = 0; i < n; i++) s[i] = i;
+    for (int i = n - 1; i > 0; i--) { int j = rnd(i + 1), t = s[i]; s[i] = s[j]; s[j] = t; }
+}
+
+static int arp_seq(int n, int *s) {
+    int len = 0, top = n - 1;
+    if (n == 1) { s[0] = 0; return 1; }
+    if (!strcmp(arp, "up")) for (int i = 0; i < n; i++) s[len++] = i;
+    else if (!strcmp(arp, "down")) for (int i = top; i >= 0; i--) s[len++] = i;
+    else if (!strcmp(arp, "updown")) {
+        for (int i = 0; i < n; i++) s[len++] = i;
+        for (int i = top - 1; i > 0; i--) s[len++] = i;
+    } else if (!strcmp(arp, "downup")) {
+        for (int i = top; i >= 0; i--) s[len++] = i;
+        for (int i = 1; i < top; i++) s[len++] = i;
+    } else if (!strcmp(arp, "upanddown")) {
+        for (int i = 0; i < n; i++) s[len++] = i;
+        for (int i = top; i >= 0; i--) s[len++] = i;
+    } else if (!strcmp(arp, "downandup")) {
+        for (int i = top; i >= 0; i--) s[len++] = i;
+        for (int i = 0; i < n; i++) s[len++] = i;
+    } else if (!strcmp(arp, "converge") || !strcmp(arp, "diverge") || !strcmp(arp, "condiverge")) {
+        int c[16];
+        for (int lo = 0, hi = top; lo <= hi; lo++, hi--) {
+            c[len++] = lo;
+            if (hi != lo) c[len++] = hi;
+        }
+        if (!strcmp(arp, "converge")) memcpy(s, c, (size_t)len * sizeof *s);
+        else if (!strcmp(arp, "diverge")) for (int i = 0; i < len; i++) s[i] = c[len - 1 - i];
+        else {
+            memcpy(s, c, (size_t)len * sizeof *s);
+            for (int i = 1; i < n - 1; i++) s[len + i - 1] = c[n - 1 - i];
+            len += n - 2;
+        }
+    } else if (!strcmp(arp, "pinkyup") || !strcmp(arp, "pinkyupdown")) {
+        for (int i = 0; i < top; i++) { s[len++] = i; s[len++] = top; }
+        if (!strcmp(arp, "pinkyupdown"))
+            for (int i = top - 2; i > 0; i--) { s[len++] = i; s[len++] = top; }
+    } else if (!strcmp(arp, "thumbup") || !strcmp(arp, "thumbupdown")) {
+        for (int i = 1; i < n; i++) { s[len++] = 0; s[len++] = i; }
+        if (!strcmp(arp, "thumbupdown"))
+            for (int i = top - 1; i > 1; i--) { s[len++] = 0; s[len++] = i; }
+    } else if (!strcmp(arp, "randomonce")) {
+        shuffle(s, n);
+        len = n;
+    }
+    return len;
+}
+
+static void play_arp(const int *notes, int nn, long long abs16, int dur, long pos,
+                     const char *pat, int patlen, int bar16, int vel, int accent_vel) {
+    int seq[64], seqlen = 0, digits = isdigit((unsigned char)arp[0]);
+    int chord = !strcmp(arp, "chord"), random = !strcmp(arp, "random");
+    int other = !strcmp(arp, "randomother");
+    if (!digits && !chord && !random && !other) seqlen = arp_seq(nn, seq);
+    int held = 0, step = 0, on[16], non = 0;
+    for (int k = 0; k <= dur; k++) {
+        long long t = (abs16 + k) * TICKS16;
+        long p = pos + k;
+        if (k < dur) {
+            char c = pat[p % patlen];
+            held = c == '1' || (c == 'x' && (held || k == 0));
+        }
+        int grid = p % arp_step == 0;
+        if (non && (k == dur || !held || grid)) {
+            for (int j = 0; j < non; j++) add_ev(t, 0, on[j], 0);
+            non = 0;
+        }
+        if (k == dur || !held || !grid) continue;
+        if (chord) { for (int j = 0; j < nn; j++) on[non++] = notes[j]; }
+        else if (digits) {
+            size_t len = strlen(arp);
+            on[non++] = notes[(arp[(size_t)((p % bar16) / arp_step) % len] - '1') % nn];
+        } else if (random) on[non++] = notes[rnd(nn)];
+        else if (other) {
+            if (step % nn == 0) shuffle(seq, nn);
+            on[non++] = notes[seq[step % nn]];
+        } else on[non++] = notes[seq[step % seqlen]];
+        step++;
+        int v = p % bar16 == 0 ? accent_vel : vel;
+        for (int j = 0; j < non; j++) add_ev(t, 1, on[j], v);
+    }
+}
+
 static void play_chord(const int *notes, int nn, long long abs16, int dur, long pos,
                        const char *pat, int patlen, int bar16, int vel, int accent_vel) {
+    if (arp) { play_arp(notes, nn, abs16, dur, pos, pat, patlen, bar16, vel, accent_vel); return; }
     int sounding = 0;
     for (int k = 0; k < dur; k++) {
         char c = pat[(pos + k) % patlen];
@@ -114,6 +222,23 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "jenny: --metre wants N/D, D one of 1 2 4 8 16, bar at most 64 sixteenths\n");
                 return 2;
             }
+        }
+        else if (!strcmp(argv[i], "--arp")) {
+            arp = "12312312";
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                const char *a = argv[++i];
+                int ok = 0;
+                for (int j = 0; arp_names[j]; j++) if (!strcmp(a, arp_names[j])) ok = 1;
+                if (!strcmp(a, "classic")) ok = 1;
+                else if (strspn(a, "123456789") == strlen(a) && strlen(a) <= MAXPAT) ok = 2;
+                if (!ok) { fprintf(stderr, "jenny: unknown --arp style %s\n", a); usage(); }
+                if (strcmp(a, "classic")) arp = a;
+            }
+        }
+        else if (!strcmp(argv[i], "--rate")) {
+            int r = int_arg(argc, argv, &i, 1, 16);
+            if (r != 8 && r != 16) { fprintf(stderr, "jenny: --rate is 8 or 16\n"); return 2; }
+            arp_step = 16 / r;
         }
         else if (!strcmp(argv[i], "--accent")) { if (++i >= argc) usage(); accent = argv[i]; }
         else if (!strcmp(argv[i], "--beat")) {

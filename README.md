@@ -21,6 +21,10 @@ chordstream --tsv test.mid | jenny --gm 5 --oct 3 --beat 1x1x0 --accent +20 -o c
 | `--accent V` | downbeat velocity: `+N` or `-N` relative to `--vel`, or `N` absolute | same as `--vel` |
 | `--metre N/D` | time signature, sets the sixteenths per bar for `--beat` | 4/4 |
 | `--bpm N` | tempo | 120 |
+| `--arp [STYLE]` | arpeggiate while the `--beat` pattern is `1` or held | `classic`, `12312312` |
+| `--rate N` | arp step: 8 for eighths, 16 for sixteenths | 8 |
+
+Arp styles: `classic`, your own digit pattern of chord notes (lowest note is 1, one digit per step, restarting each bar), `up`, `down`, `updown`, `downup`, `upanddown`, `downandup`, `converge`, `diverge`, `condiverge`, `pinkyup`, `pinkyupdown`, `thumbup`, `thumbupdown`, `chord`, `random`, `randomother`, `randomonce`.
 
 Silence and solo tokens play nothing. A chord change on an `x` cell strikes the new chord.
 
